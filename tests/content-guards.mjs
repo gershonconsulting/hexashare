@@ -11,7 +11,7 @@
  *   2. duplicated sections - the "Why teams choose NexaShare" block was
  *                  rendered twice, identical, back to back.
  *   3. stale download link - the landing page offered extension 1.2.11 while
- *                  1.2.16 was the version actually shipping.
+ *                  1.2.18 was the version actually shipping.
  *
  * Run: node tests/content-guards.mjs
  */

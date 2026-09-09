@@ -240,10 +240,14 @@ async function ensureLinkedInSession() {
   });
 }
 
-async function scrapeCompanyPosts(source) {
-  const url = source.sourceType === 'person'
+function sourceUrl(source) {
+  return source.sourceType === 'person'
     ? `https://www.linkedin.com/in/${source.vanity}/recent-activity/all/`
-    : `https://www.linkedin.com/company/${source.vanity}/posts/?feedView=all`;
+    : `https://www.linkedin.com/company/${source.vanity}/posts/?feedView=all&viewAsMember=true`;
+}
+
+async function scrapeCompanyPosts(source) {
+  const url = sourceUrl(source);
   return withBackgroundTab(url, async tabId => {
     const loaded = await waitForLinkedInPosts(tabId);
     if (!loaded) return { companyName: '', posts: [], notReady: true };
@@ -260,7 +264,7 @@ async function waitForLinkedInPosts(tabId) {
   for (let attempt = 0; attempt < POST_DISCOVERY_ATTEMPTS; attempt++) {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => document.querySelectorAll('.feed-shared-update-v2, [data-urn*="activity"]').length
+      func: () => document.querySelectorAll('.feed-shared-update-v2, [data-urn*="activity"], [aria-label^="Open control menu for post by"]').length
     });
     if (Number(results?.[0]?.result) > 0) return true;
     await sleep(1250);
@@ -293,6 +297,50 @@ function extractCompanyPageFromDOM() {
       )
     });
   });
+  if (!byId.size) {
+    const stripPostHeader = value => {
+      const head = value.slice(0, 140);
+      const marker = head.indexOf('•');
+      return (marker === -1 ? value : value.slice(marker + 1)).replace(/^[\s·]+/, '').trim();
+    };
+    const hashText = value => {
+      let h = 5381;
+      for (let i = 0; i < value.length; i++) h = ((h * 33) ^ value.charCodeAt(i)) >>> 0;
+      return `t${h.toString(36)}`;
+    };
+    const anchors = [...document.querySelectorAll('[aria-label]')]
+      .filter(node => /^Open control menu for post by /i.test(node.getAttribute('aria-label') || ''));
+    for (const anchor of anchors) {
+      let node = anchor;
+      let card = null;
+      for (let depth = 0; depth < 12 && node; depth++) {
+        node = node.parentElement;
+        if (node && [...node.querySelectorAll('button, [role="button"]')]
+          .some(control => /^repost$/i.test((control.getAttribute('aria-label') || '').trim()))) { card = node; break; }
+      }
+      if (!card) continue;
+      const cardText = (card.innerText || '').replace(/\s+/g, ' ').replace(/^Feed post\s*/i, '').trim();
+      if (!cardText) continue;
+      const bodyText = stripPostHeader(cardText);
+      if (!bodyText) continue;
+      const matchText = bodyText.slice(0, 240);
+      const id = hashText(matchText);
+      if (byId.has(id)) continue;
+      const control = [...card.querySelectorAll('button, [role="button"]')]
+        .find(item => /^repost$/i.test((item.getAttribute('aria-label') || '').trim()));
+      byId.set(id, {
+        id,
+        url: location.href.split('#')[0],
+        inPlace: true,
+        matchText,
+        text: bodyText.slice(0, 1200),
+        alreadyReposted: !!control && (
+          control.getAttribute('aria-pressed') === 'true' ||
+          /undo repost|remove repost|annuler la republication|supprimer la republication/i.test(control.getAttribute('aria-label') || '')
+        )
+      });
+    }
+  }
   const heading = document.querySelector('h1.org-top-card-summary__title, h1.org-top-card-summary-info-list__info-item, main h1');
   const metaTitle = document.querySelector('meta[property="og:title"]')?.content || '';
   const rawName = heading?.textContent?.trim() || metaTitle.replace(/\s*[|\-]\s*LinkedIn.*$/i, '').trim();
@@ -301,13 +349,28 @@ function extractCompanyPageFromDOM() {
 }
 
 async function repostContent(post) {
-  await log('info', 'repost:attempt', { postId: post.id, url: post.url });
+  await log('info', 'repost:attempt', { postId: post.id, url: post.url, inPlace: !!post.inPlace });
+  if (post.inPlace) return repostOnSourcePage(post);
   return withBackgroundTab(post.url, async tabId => {
     const results = await chrome.scripting.executeScript({ target: { tabId }, func: clickAndConfirmRepost });
     const result = results?.[0]?.result || { confirmed: false, detail: 'LinkedIn did not return an outcome.' };
     if (result.confirmed && !result.repostUrl) {
       result.detail += ' LinkedIn confirmed the repost, but did not expose a View repost link to record.';
     }
+    await log(result.confirmed ? 'info' : 'warn', result.confirmed ? 'repost:confirmed' : 'repost:not-confirmed', { postId: post.id, detail: result.detail });
+    return result;
+  });
+}
+
+async function repostOnSourcePage(post) {
+  return withBackgroundTab(post.url, async tabId => {
+    await waitForLinkedInPosts(tabId);
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: clickAndConfirmRepostInPlace,
+      args: [post.matchText || '']
+    });
+    const result = results?.[0]?.result || { confirmed: false, detail: 'LinkedIn did not return an outcome.' };
     await log(result.confirmed ? 'info' : 'warn', result.confirmed ? 'repost:confirmed' : 'repost:not-confirmed', { postId: post.id, detail: result.detail });
     return result;
   });
@@ -349,7 +412,19 @@ async function clickAndConfirmRepost() {
   const isRepostControl = value => /\brepost\b|\breshare\b|republier|republication|reposten/.test(value);
   const isCommentShare = value => /with your thoughts|quote|ajouter (?:vos|mes) réflexions|avec (?:vos|mes) réflexions|avec un commentaire|gedanken hinzufügen|mit (?:ihren|deinen|eigenen) gedanken|mit kommentar/.test(value);
   const isUndoRepost = value => /undo repost|remove repost|annuler la republication|supprimer la republication|repost rückgängig|repost entfernen/.test(value);
-  const isInstantRepost = value => /^(?:repost|reshare) instantly$|^republier (?:instantanément|maintenant)$|^(?:jetzt|sofort|direkt) reposten$|^reposten$/.test(value);
+  const isInstantRepost = value => /^(?:repost|reshare) instantly\b/.test(value)
+    || /^(?:repost|reshare)\b[^]*\binstantly\b/.test(value)
+    || /^republier (?:instantanément|maintenant)\b/.test(value)
+    || /^republier\b[^]*instantan/.test(value)
+    || /^(?:jetzt|sofort|direkt) reposten\b/.test(value)
+    || /^reposten\b/.test(value);
+  // LinkedIn labels some controls with BOTH aria-label and identical inner text, so the
+  // concatenated describe() reads "repost repost" and anchored predicates never match.
+  const labelsOf = item => [item?.getAttribute?.('aria-label') || '', item?.getAttribute?.('data-view-name') || '', item?.textContent || '']
+    .map(value => value.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean)
+    .concat(describe(item));
+  const labelled = (item, predicate) => labelsOf(item).some(predicate);
   const isSuccessNotice = value => /repost successful|reposted|post shared|shared successfully|republication réussie|publication republiée|a été republié|erfolgreich repostet|beitrag (?:wurde )?repostet|repost erfolgreich/.test(value) && !/could not|error|failed|impossible|erreur|échec|fehlgeschlagen|fehler/.test(value);
   const isViewRepost = value => /view repost|view reshare|voir la republication|republication anzeigen|repost anzeigen/.test(value);
   const controls = () => [...document.querySelectorAll('button, [role="button"], [data-view-name*="repost"], [data-view-name*="reshare"]')].filter(isVisible);
@@ -369,11 +444,10 @@ async function clickAndConfirmRepost() {
     action = [...document.querySelectorAll('[role="menuitem"], [role="option"], button, [role="button"], .artdeco-dropdown__item, .social-reshare-button')]
       .filter(isVisible)
       .find(item => {
-        const value = describe(item);
         // LinkedIn's current popup uses role=button elements inside generic
-        // containers, not its former role=menu/artdeco markup.  Match only the
-        // exact visible direct-share action; never choose the thoughts/quote path.
-        return isInstantRepost(value) && !isCommentShare(value);
+        // containers, not its former role=menu/artdeco markup.  Match the visible
+        // direct-share action; never choose the thoughts/quote path.
+        return labelled(item, isInstantRepost) && !labelled(item, isCommentShare);
       });
   }
   if (!action) return { confirmed: false, detail: "NexaShare opened the repost menu but could not identify LinkedIn's visible Repost instantly choice." };
@@ -392,6 +466,80 @@ async function clickAndConfirmRepost() {
     if (controlChanged) return { confirmed: true, detail: 'LinkedIn visibly changed the repost control to its active state.' };
   }
   return { confirmed: false, detail: 'NexaShare selected LinkedIn\'s direct Repost choice, but LinkedIn did not provide visible confirmation.' };
+}
+
+async function clickAndConfirmRepostInPlace(matchText) {
+  const isVisible = item => {
+    const box = item?.getBoundingClientRect?.();
+    return !!box && box.width > 0 && box.height > 0 && getComputedStyle(item).visibility !== 'hidden' && getComputedStyle(item).display !== 'none';
+  };
+  const describe = item => `${item?.getAttribute?.('aria-label') || ''} ${item?.getAttribute?.('data-view-name') || ''} ${item?.textContent || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  const labelsOf = item => [item?.getAttribute?.('aria-label') || '', item?.getAttribute?.('data-view-name') || '', item?.textContent || '']
+    .map(value => value.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean)
+    .concat(describe(item));
+  const labelled = (item, predicate) => labelsOf(item).some(predicate);
+  const isCommentShare = value => /with (?:your|my) thoughts|with thoughts|quote|ajouter (?:vos|mes) réflexions|avec (?:vos|mes) réflexions|avec un commentaire|gedanken hinzufügen|mit kommentar/.test(value);
+  const isInstantRepost = value => /^(?:repost|reshare) instantly\b/.test(value)
+    || /^(?:repost|reshare)\b[^]*\binstantly\b/.test(value)
+    || /^republier (?:instantanément|maintenant)\b/.test(value)
+    || /^republier\b[^]*instantan/.test(value)
+    || /^(?:jetzt|sofort|direkt) reposten\b/.test(value)
+    || /^reposten\b/.test(value);
+  const isUndoRepost = value => /undo repost|remove repost|annuler la republication|supprimer la republication/.test(value);
+  const isSuccessNotice = value => /repost successful|reposted|post shared|shared successfully|républication réussie|republication réussie|publication republiée|a été republié/.test(value) && !/could not|error|failed|impossible|erreur|échec/.test(value);
+  const isViewRepost = value => /view repost|view reshare|voir la republication/.test(value);
+  const isRepostControl = item => /^(?:repost|republier|reposten)$/i.test((item.getAttribute('aria-label') || '').trim());
+
+  const wanted = String(matchText || '').replace(/\s+/g, ' ').trim().slice(0, 240).toLowerCase();
+  const anchors = [...document.querySelectorAll('[aria-label]')]
+    .filter(node => /^Open control menu for post by /i.test(node.getAttribute('aria-label') || ''));
+  let card = null;
+  for (const anchor of anchors) {
+    let node = anchor;
+    let candidate = null;
+    for (let depth = 0; depth < 12 && node; depth++) {
+      node = node.parentElement;
+      if (node && [...node.querySelectorAll('button, [role="button"]')].some(isRepostControl)) { candidate = node; break; }
+    }
+    if (!candidate) continue;
+    const raw = (candidate.innerText || '').replace(/\s+/g, ' ').replace(/^Feed post\s*/i, '').trim();
+    const head = raw.slice(0, 140);
+    const marker = head.indexOf('\u2022');
+    const text = (marker === -1 ? raw : raw.slice(marker + 1)).replace(/^[\s\u00b7]+/, '').trim().toLowerCase();
+    if (!wanted || text.slice(0, 240) === wanted || text.includes(wanted.slice(0, 120))) { card = candidate; break; }
+  }
+  if (!card) return { confirmed: false, detail: 'NexaShare could not find this post again on the LinkedIn page; it may have moved or been removed.' };
+
+  const button = [...card.querySelectorAll('button, [role="button"]')].filter(isVisible).find(isRepostControl);
+  if (!button) return { confirmed: false, detail: 'Repost button was not found on the visible LinkedIn post card.' };
+  if (button.getAttribute('aria-pressed') === 'true' || labelled(button, isUndoRepost)) return { confirmed: false, detail: 'Post was already reposted.' };
+  const before = describe(button);
+  button.scrollIntoView({ block: 'center', inline: 'center' });
+  button.click();
+
+  let action;
+  for (let attempt = 0; attempt < 12 && !action; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    action = [...document.querySelectorAll('[role="menuitem"], [role="option"], button, [role="button"], li, .artdeco-dropdown__item')]
+      .filter(isVisible)
+      .find(item => labelled(item, isInstantRepost) && !labelled(item, isCommentShare));
+  }
+  if (!action) return { confirmed: false, detail: "NexaShare opened the repost menu but could not identify LinkedIn's visible direct repost choice." };
+  action.scrollIntoView({ block: 'center', inline: 'center' });
+  action.click();
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const controlChanged = button.getAttribute('aria-pressed') === 'true' || labelled(button, isUndoRepost) || describe(button) !== before;
+    const notices = [...document.querySelectorAll('[role="alert"], [role="status"], .artdeco-toast-item, .artdeco-inline-feedback')].filter(isVisible);
+    const successNotice = notices.find(item => isSuccessNotice(describe(item)));
+    const viewRepost = successNotice && [...successNotice.querySelectorAll('a[href]')].find(link => labelled(link, isViewRepost));
+    const repostUrl = viewRepost ? new URL(viewRepost.getAttribute('href'), location.origin).href : '';
+    if (successNotice) return { confirmed: true, repostUrl, detail: repostUrl ? 'LinkedIn confirmed the repost and provided its View repost link.' : 'LinkedIn displayed a visible repost confirmation.' };
+    if (controlChanged) return { confirmed: true, detail: 'LinkedIn visibly changed the repost control to its active state.' };
+  }
+  return { confirmed: false, detail: 'NexaShare selected LinkedIn\'s direct repost choice, but LinkedIn did not provide visible confirmation.' };
 }
 
 async function withBackgroundTab(url, operation) {

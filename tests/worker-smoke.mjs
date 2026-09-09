@@ -208,6 +208,31 @@ assert.doesNotMatch(registerSource, /Create your team|teamName/);
 assert.match(homeSource, /fetch\('\/api\/user'/);
 assert.match(homeSource, /location\.replace\('\/dashboard\.html'\)/);
 
+// --- daily report signals (added with migration 0007) ---------------------
+// The report must be able to distinguish "nothing happened" from "nothing ran".
+const reportSignalsMigration = await readFile(new URL('../migrations/0007_report_signals.sql', import.meta.url), 'utf8');
+assert.match(reportSignalsMigration, /ALTER TABLE extension_tokens ADD COLUMN extension_version TEXT/);
+assert.match(reportSignalsMigration, /ALTER TABLE extension_tokens ADD COLUMN last_seen_at TEXT/);
+assert.match(reportSignalsMigration, /CREATE TABLE IF NOT EXISTS extension_runs/);
+// `trigger` is reserved in SQLite - the column must be trigger_source.
+assert.doesNotMatch(reportSignalsMigration, /\btrigger TEXT/);
+
+const reportSource = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
+assert.match(reportSource, /CURRENT_EXTENSION_VERSION = '1\.2\.18'/);
+assert.match(reportSource, /THE DAILY JOB DID NOT RUN/);
+assert.match(reportSource, /Outdated extension installed/);
+assert.match(reportSource, /Yesterday vs the day before/);
+assert.match(reportSource, /FROM extension_runs/);
+
+// The version the report warns against must match the one the app ships and the
+// one the dashboard expects - three surfaces, one number.
+assert.match(workerSource, /CURRENT_EXTENSION_VERSION = '1\.2\.18'/);
+assert.match(workerSource, /current_extension_version: CURRENT_EXTENSION_VERSION/);
+assert.match(workerSource, /\/api\/extension\/seen/);
+assert.match(workerSource, /INSERT INTO extension_runs/);
+assert.equal(manifest.version, '1.2.18');
+assert.match(dashboardSource, /\/api\/extension\/seen/);
+
 console.log('Worker and extension smoke checks passed.');
 
 

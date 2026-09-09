@@ -6,6 +6,7 @@ const LINKEDIN_REDIRECT_URI = `${APP_ORIGIN}/api/auth/callback`;
 const LINKEDIN_SCOPES = 'openid profile email';
 const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/5kQdRb1rc6mvfcZ8yvcfK00';
 const SETUP_REMINDER_TYPE = 'missing_company_after_connection';
+const CURRENT_EXTENSION_VERSION = '1.2.18';
 const SETUP_REMINDER_FROM = 'NexaShare <hello@nexashare.com>';
 const DAILY_REPORT_TYPE = 'daily_repost_report';
 const REGISTRATION_NOTIFICATION_FROM = SETUP_REMINDER_FROM;
@@ -332,6 +333,23 @@ async function getExtensionUser(request, env) {
   ).bind(await sha256(auth.slice(7))).first();
 }
 
+// The daily report cannot tell "quiet day" from "never ran" without these two
+// signals, so every authenticated extension call refreshes them.
+async function touchExtensionToken(request, env, version) {
+  const auth = request.headers.get('Authorization') || '';
+  if (!auth.startsWith('Bearer ')) return;
+  try {
+    await env.DB.prepare(
+      `UPDATE extension_tokens
+       SET last_seen_at = datetime('now'),
+           extension_version = COALESCE(?, extension_version)
+       WHERE token_hash = ?`
+    ).bind(version ? String(version).slice(0, 20) : null, await sha256(auth.slice(7))).run();
+  } catch (error) {
+    console.error('touchExtensionToken failed', { message: error?.message });
+  }
+}
+
 async function handleAPI(request, env, ctx) {
   const url = new URL(request.url);
   const authResponse = await handleAuth(request, env, ctx);
@@ -347,6 +365,7 @@ async function handleAPI(request, env, ctx) {
         resend_email: env.RESEND_API_KEY ? 'configured' : 'not_configured',
         registration_notification: env.RESEND_API_KEY && env.REGISTRATION_NOTIFICATION_TO ? 'configured' : 'not_configured',
         daily_repost_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
+        current_extension_version: CURRENT_EXTENSION_VERSION,
         canonical_origin: APP_ORIGIN,
         checked_at: new Date().toISOString()
       });
@@ -358,6 +377,7 @@ async function handleAPI(request, env, ctx) {
         resend_email: env.RESEND_API_KEY ? 'configured' : 'not_configured',
         registration_notification: env.RESEND_API_KEY && env.REGISTRATION_NOTIFICATION_TO ? 'configured' : 'not_configured',
         daily_repost_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
+        current_extension_version: CURRENT_EXTENSION_VERSION,
         canonical_origin: APP_ORIGIN,
         checked_at: new Date().toISOString()
       }, 503);
@@ -550,7 +570,36 @@ async function handleAPI(request, env, ctx) {
       });
       accepted++;
     }
+    const reportedVersion = typeof body.extensionVersion === 'string' ? body.extensionVersion : null;
+    await touchExtensionToken(request, env, reportedVersion);
+    try {
+      await env.DB.prepare(
+        `INSERT INTO extension_runs (user_id, team_id, extension_version, trigger_source, outcomes)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(
+        user.id, user.team_id, reportedVersion,
+        String(body.trigger || 'ingest').slice(0, 40), accepted
+      ).run();
+    } catch (error) {
+      console.error('extension_runs insert failed', { message: error?.message });
+    }
     return jsonResponse({ success: true, accepted });
+  }
+
+  // The dashboard reports the build it can see in this browser, so an outdated
+  // install is visible even on a day the extension never completes a run.
+  if (url.pathname === '/api/extension/seen' && request.method === 'POST') {
+    const user = await getUser(request, env);
+    if (!user) return jsonResponse({ error: 'Not authenticated' }, 401);
+    const body = await request.json().catch(() => ({}));
+    const version = typeof body.version === 'string' ? body.version.slice(0, 20) : null;
+    if (!version) return jsonResponse({ error: 'A version is required' }, 400);
+    await env.DB.prepare(
+      `UPDATE extension_tokens
+       SET last_seen_at = datetime('now'), extension_version = ?
+       WHERE user_id = ? AND revoked_at IS NULL`
+    ).bind(version, user.id).run();
+    return jsonResponse({ success: true, current: CURRENT_EXTENSION_VERSION, installed: version });
   }
 
   if (url.pathname === '/api/extension/deliveries/processing' && request.method === 'POST') {

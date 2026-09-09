@@ -1,0 +1,132 @@
+================================================================
+HANDOFF.txt  -  nexashare
+Written by: Claude (Anthropic) - token-limit handoff protocol
+Date: 2026-09-09
+================================================================
+
+0. WHO YOU ARE READING THIS
+----------------------------------------------------------------
+You are an AI assistant taking over work on this repository for
+Olivier Attia, founder / CTO of Gershon Consulting LLC.
+
+Read the MASTER HANDOFF first:
+  github.com/gershonconsulting/memory -> HANDOFF.txt
+
+CRITICAL OPERATING RULES - do not break these:
+  * Olivier does NOT use a terminal, CLI, git or PowerShell. NEVER
+    give him commands, scripts, .bat files or 'just run this' steps.
+  * He does NOT upload, download, move or save files, and does not
+    click buttons an AI injected. If a file has to get somewhere,
+    YOU find the route and execute it.
+  * End every actionable reply with:
+      GREEN CHECK = ready for him to test (+ the link)
+      RED CROSS   = something still to do (+ exactly 3 options he
+                    can actually action - never a CLI step)
+  * Executors: Ariel = code and repo work. Charles = Chrome extension
+    and web admin panels. BOTH ARE AI, NOT HUMANS - 'hand it to
+    Charles' and 'use the browser' are THE SAME ROUTE.
+
+1. WHAT THIS REPO IS
+----------------------------------------------------------------
+Product   : NexaShare
+Live URL  : nexashare.com
+Does      : LinkedIn-first automation SaaS with AI content features and tiered subscriptions, plus a Chrome extension that does the collecting and reposting
+Users     : NexaShare subscribers
+
+2. STACK AND DEPLOY ROUTE
+----------------------------------------------------------------
+Stack         : Cloudflare (Pages + Workers), Supabase, GitHub,
+                LinkedIn Connect for login, Stripe for subscriptions
+Extension     : chrome-extension/ - manifest.json is the version
+                source of truth
+Default branch: main
+Deploy        : .github/workflows/deploy.yml auto-deploys on push to
+                main. nexashare.com went live ~1 min after a commit
+                in a past run.
+Tests         : tests/content-guards.mjs - mojibake scan, duplicate-
+                heading check, newest-zip link check
+
+3. RECENTLY DONE  [DONE]
+----------------------------------------------------------------
+- 55 mojibake sequences repaired across public/index.html,
+  dashboard.html and login.html; duplicated 'Why teams choose
+  NexaShare' section removed; download link moved 1.2.11 -> 1.2.16.
+  Verified live. (checkpoint CP-NXS-001)
+- tests/content-guards.mjs added, proven to FAIL on the pre-fix files
+  before being committed.
+- Per-computer 'Collecting session ON/OFF' viewer mode added to
+  dashboard.html (Chrome Extension view), verified live 2026-09-09.
+
+4. PENDING  [TODO] - THREE LIVE BLOCKERS
+----------------------------------------------------------------
+(a) REPOST HAS BEEN AT 0% SINCE 6 SEPT 2026. Extension 1.2.18 is the
+    fix - it handles LinkedIn's new company-page markup, the page-
+    admin redirect, and the renamed 'Repost' menu item. The code is
+    WRITTEN, REBASED, and ALL FOUR TEST SUITES PASS. It is NOT landed:
+    main is still 1.2.16 at commit 2dfbe35.
+    THE 12 VERIFIED 1.2.18 FILES EXIST ONLY ON OLIVIER'S WINDOWS
+    MACHINE at:
+      C:\Users\oatti\Documents\Claude\Projects\Nexashare (1)\
+      ship-2026-09-09\verified-tree\
+    They are not in the repo on any branch. A session must be LINKED
+    TO HIS COMPUTER to read them. Unpacked build for Chrome is at
+      ...\Nexashare (1)\nexashare-extension-1.2.18\
+    THIS IS THE SINGLE MOST IMPORTANT OPEN ITEM IN THIS REPO.
+
+(b) RESEND_API_KEY has been UNSET on the NexaShare Worker for roughly
+    20 days, so the daily-report cron fails on its first line no
+    matter what code ships. Only a person can type it in:
+    Cloudflare -> Workers -> NexaShare worker -> Settings ->
+    Variables and Secrets.
+
+(c) Shipping from a Cowork session is blocked at the source: the
+    GitHub repo was never attached when the task was created, so the
+    git proxy refuses to push. The fix Olivier can action: start the
+    task with `gershonconsulting/NexaShare` attached as a GitHub
+    source.
+
+- The repo also carries 3 open GitHub issues - read them.
+
+5. MISSING / NOT BUILT YET
+----------------------------------------------------------------
+- Olivier asked for a full specifications document including technical
+  infrastructure, and wants the project rolled out via the unattended
+  agent loop so he does not have to sit behind it. Not delivered.
+
+6. KNOWN BUGS / NEEDS FIXING
+----------------------------------------------------------------
+- Repost 0% - see 4(a). Root cause understood, fix written, not landed.
+- Daily report silently dead - see 4(b).
+
+7. NEXT ACTION - START HERE
+----------------------------------------------------------------
+  -> Get extension 1.2.18 off Olivier's Windows machine and into main.
+     Repost has been dead for three days and the fix is sitting on a
+     laptop. Everything else here is secondary.
+
+8. GOTCHAS / HARD-WON LESSONS
+----------------------------------------------------------------
+- RELEASE RULE: NEVER commit a .zip. deploy.yml rebuilds
+  public/nexashare-extension.zip and the versioned zip from
+  chrome-extension/manifest.json on every deploy. Committing a stale
+  zip is exactly what broke the download links last time.
+- COLLECTING SESSION is PER COMPUTER, never per account. localStorage
+  key `nexashare_collecting`, card lives in the Chrome Extension view
+  of dashboard.html. Default ON.
+- Writes to this repo: `git push` is proxy-refused and the GitHub API
+  403s. The working path is the GitHub web UI through Chrome. Upload
+  ONE file per call (multi-file calls are refused), from a path under
+  /mnt/user-data/uploads/. Retry once on a random refusal.
+- Verify every commit by reading raw.githubusercontent.com. Commits
+  have silently failed to land and looked identical to success.
+- content-guards.mjs exists for a reason - the mojibake came back once
+  already. Run it before shipping any HTML change.
+
+9. CONTACT / ESCALATION
+----------------------------------------------------------------
+Olivier Attia - oattia@gmail.com
+Report mailbox - report@gershonconsulting.com
+
+================================================================
+END OF HANDOFF
+================================================================

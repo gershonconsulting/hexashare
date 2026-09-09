@@ -52,15 +52,13 @@ for (const page of pages) {
 }
 
 // --------------------------------------------- 3. extension download link is current
-const shipped = entries
-  .filter(name => /^nexashare-extension-\d+\.\d+\.\d+\.zip$/.test(name))
-  .sort((a, b) => {
-    const parse = n => n.match(/\d+/g).map(Number);
-    const [x, y] = [parse(a), parse(b)];
-    return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
-  });
-assert.ok(shipped.length > 0, 'expected at least one packaged extension zip in public/');
-const newest = shipped[shipped.length - 1];
+// The zips in public/ are BUILD ARTIFACTS - the deploy workflow deletes and
+// rebuilds them from chrome-extension/ on every deploy. The manifest is the
+// single source of truth for which version the pages must link to.
+const manifestVersion = JSON.parse(
+  await readFile(new URL('../chrome-extension/manifest.json', import.meta.url), 'utf8'),
+).version;
+const newest = `nexashare-extension-${manifestVersion}.zip`;
 
 for (const page of pages) {
   const html = await readFile(path.join(PUBLIC_DIR, page), 'utf8');

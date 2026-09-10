@@ -1,4 +1,5 @@
 import { getCampaignHealth, markDeliveryProcessing, recordDeliveryOutcome } from './delivery-engine.js';
+import { buildAdminReportEmail, collectAdminReportData, reportRecipients, sendAdminDailyReport } from './admin-report.js';
 
 const LINKEDIN_CLIENT_ID = '78dsjq2rbcv26t';
 const APP_ORIGIN = 'https://nexashare.com';
@@ -366,6 +367,8 @@ async function handleAPI(request, env, ctx) {
         registration_notification: env.RESEND_API_KEY && env.REGISTRATION_NOTIFICATION_TO ? 'configured' : 'not_configured',
         daily_repost_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
         current_extension_version: CURRENT_EXTENSION_VERSION,
+        admin_daily_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
+        admin_report_recipient: reportRecipients(env).join(', '),
         canonical_origin: APP_ORIGIN,
         checked_at: new Date().toISOString()
       });
@@ -378,6 +381,8 @@ async function handleAPI(request, env, ctx) {
         registration_notification: env.RESEND_API_KEY && env.REGISTRATION_NOTIFICATION_TO ? 'configured' : 'not_configured',
         daily_repost_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
         current_extension_version: CURRENT_EXTENSION_VERSION,
+        admin_daily_report: env.RESEND_API_KEY ? 'configured' : 'not_configured',
+        admin_report_recipient: reportRecipients(env).join(', '),
         canonical_origin: APP_ORIGIN,
         checked_at: new Date().toISOString()
       }, 503);
@@ -661,6 +666,28 @@ async function handleAPI(request, env, ctx) {
       total_members: members?.count || 0,
       reposts_this_week: thisWeek?.count || 0
     });
+  }
+
+  // Platform-wide extension report. Read-only preview plus an on-demand send,
+  // guarded by ADMIN_REPORT_KEY so it is never reachable by a normal account.
+  if (url.pathname === '/api/admin/daily-report') {
+    if (!env.ADMIN_REPORT_KEY) return jsonResponse({ error: 'Admin reporting is not configured' }, 404);
+    const presented = request.headers.get('X-Admin-Report-Key') || url.searchParams.get('key') || '';
+    if (presented !== env.ADMIN_REPORT_KEY) return jsonResponse({ error: 'Not authorised' }, 401);
+
+    if (request.method === 'POST') {
+      const result = await sendAdminDailyReport(env, { force: url.searchParams.get('force') === '1' });
+      return jsonResponse({ recipient: reportRecipients(env), ...result });
+    }
+
+    if (request.method === 'GET') {
+      const data = await collectAdminReportData(env.DB);
+      const preview = buildAdminReportEmail(data, { to: reportRecipients(env)[0] });
+      if (url.searchParams.get('format') === 'html') {
+        return new Response(preview.html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      }
+      return jsonResponse({ subject: preview.subject, to: preview.to, from: preview.from, text: preview.text, data });
+    }
   }
 
   return jsonResponse({ error: 'Not found' }, 404);

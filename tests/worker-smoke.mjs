@@ -233,6 +233,30 @@ assert.match(workerSource, /INSERT INTO extension_runs/);
 assert.equal(manifest.version, '1.2.18');
 assert.match(dashboardSource, /\/api\/extension\/seen/);
 
+// --- platform-wide extension report -----------------------------------------
+assert.equal(healthBody.admin_daily_report, 'not_configured');
+assert.equal(healthBody.admin_report_recipient, 'report@gershonconsulting.com');
+
+// The admin endpoint stays invisible until ADMIN_REPORT_KEY is set...
+const adminReportUnconfigured = await worker.fetch(new Request('https://nexashare.com/api/admin/daily-report'), env);
+assert.equal(adminReportUnconfigured.status, 404);
+
+// ...and rejects a wrong key without touching D1.
+const adminReportWrongKey = await worker.fetch(
+  new Request('https://nexashare.com/api/admin/daily-report?key=nope'),
+  { ...env, ADMIN_REPORT_KEY: 'correct-horse' }
+);
+assert.equal(adminReportWrongKey.status, 401);
+
+// The cron entrypoint must run both daily emails, not just the per-user one.
+const cronWorker = (await import('../src/worker.js')).default;
+let cronPromise;
+cronWorker.scheduled({}, env, { waitUntil(promise) { cronPromise = promise; } });
+assert.deepEqual(await cronPromise, [
+  { sent: 0, skipped: 'resend_not_configured' },
+  { sent: 0, skipped: 'resend_not_configured', to: ['report@gershonconsulting.com'] }
+]);
+
 console.log('Worker and extension smoke checks passed.');
 
 

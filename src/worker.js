@@ -1,4 +1,5 @@
 import app from './index.js';
+import { sendAdminDailyReport } from './admin-report.js';
 
 const APP_ORIGIN = 'https://nexashare.com';
 const DAILY_REPORT_FROM = 'NexaShare <nexashare@gershon.ai>';
@@ -230,6 +231,11 @@ export default {
     return app.fetch(request, env, ctx);
   },
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(sendDailyUserReports(env));
+    // Two independent daily emails: one per registered user, and one
+    // platform-wide operations digest for Gershon Consulting.
+    ctx.waitUntil(Promise.all([
+      sendDailyUserReports(env),
+      sendAdminDailyReport(env)
+    ]));
   }
 };

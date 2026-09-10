@@ -46,6 +46,10 @@ The Cloudflare account must contain:
 - Worker secret: `RESEND_API_KEY`
 - Worker secret: `REGISTRATION_NOTIFICATION_TO` (the email address that receives
   each new-user alert)
+- Optional Worker variable: `ADMIN_REPORT_TO` (overrides the daily extension
+  report recipient; defaults to `report@gershonconsulting.com`)
+- Optional Worker secret: `ADMIN_REPORT_KEY` (unlocks the on-demand report
+  endpoint; the endpoint returns 404 while it is unset)
 
 Set the notification recipient without committing the address:
 
@@ -110,7 +114,8 @@ It never uploads application files to Hostinger.
 1. Confirm the Cloudflare zone is active and email DNS is intact.
 2. Confirm the GitHub `production` environment and both secrets exist.
 3. Confirm the Worker secrets `LINKEDIN_CLIENT_SECRET`, `RESEND_API_KEY`, and
-   `REGISTRATION_NOTIFICATION_TO` exist.
+   `REGISTRATION_NOTIFICATION_TO` exist
+   (`RESEND_API_KEY` also drives the daily extension report).
 4. Confirm the LinkedIn redirect URL is updated.
 5. Immediately before the first custom-domain deployment, remove only the old
    web-host records that conflict at `nexashare.com` and `www.nexashare.com`
@@ -128,3 +133,40 @@ It never uploads application files to Hostinger.
 After the first release is verified, automatic deployment on pushes to `main`
 may be enabled by adding a `push` trigger. Keeping production manual is safer
 until then.
+
+## Daily extension report
+
+The Worker cron (`0 6 * * *`, 06:00 UTC) sends two independent emails:
+
+1. **Per-user repost report** — one email per registered user, their own last
+   24 hours of repost outcomes.
+2. **Platform-wide extension report** — a single operations digest emailed to
+   `report@gershonconsulting.com` from `NexaShare <nexashare@gershon.ai>`,
+   subject `NexaShare Extension Report — <Month D, YYYY>`.
+
+The platform report covers the last 24 hours across every team: confirmed,
+failed and skipped reposts with a day-over-day delta, success rate, active
+extensions, connected installs, new registrations, monitored sources, delivery
+engine job states and pending retries, the reasons reposts failed, the most
+active sources, a per-team breakdown, the latest 25 outcomes, and a **Needs
+attention** block (no activity at all, success rate under 70%, queued retries,
+installs silent for 7 days, no source enabled).
+
+`migrations/0008_admin_daily_reports.sql` adds `admin_daily_reports`, which
+records every send and guarantees one report per day even if the cron fires
+twice.
+
+Checking and triggering it by hand (requires `ADMIN_REPORT_KEY`):
+
+```bash
+# JSON preview, sends nothing
+curl 'https://nexashare.com/api/admin/daily-report?key=KEY'
+# The rendered email in the browser
+curl 'https://nexashare.com/api/admin/daily-report?key=KEY&format=html'
+# Send it now (add &force=1 to bypass the once-a-day guard)
+curl -X POST 'https://nexashare.com/api/admin/daily-report?key=KEY'
+```
+
+`https://nexashare.com/api/health` reports `admin_daily_report` and
+`admin_report_recipient`. While `RESEND_API_KEY` is unset the cron runs, logs
+`Admin daily report skipped`, and sends nothing.

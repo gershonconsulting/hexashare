@@ -31,9 +31,17 @@ jobs:
       - name: Run Worker smoke checks
         run: node tests/worker-smoke.mjs
 
+      - name: Run admin daily report checks
+        run: node tests/admin-report.test.mjs
+
+      - name: Run delivery engine checks
+        run: node tests/delivery-engine.test.mjs
+
       - name: Validate JavaScript and Chrome manifest
         run: |
           node --check src/index.js
+          node --check src/worker.js
+          node --check src/admin-report.js
           node --check chrome-extension/sync-core.js
           node --check chrome-extension/content.js
           node --check chrome-extension/popup.js
